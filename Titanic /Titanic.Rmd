@@ -1,0 +1,177 @@
+---
+title: "Titanic_analysis"
+author: "Ilaria"
+date: "9/2/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+```
+
+## Titanic machine learning analysis
+
+This document shows the analysis done on the Titanic data. Using information available, it is interesting to see if it is possible to predict who died and survived during this catastrophe.
+
+First of all, let's load the data, both for training and test set
+
+```{r cars}
+# Importing the dataset
+training_set = read.csv('train.csv')
+test_set = read.csv('test.csv')
+
+summary(training_set)
+summary(test_set)
+```
+
+Considering that in the beginning we will wrangle all data together, we merge train
+and test set.
+
+```{r pressure, echo=FALSE}
+#bring train and test set together 
+dataset  <- bind_rows(training_set, test_set)
+```
+
+#Data wrangling
+
+Next step is to clean up our data. We need to check if NAs values are present, 
+and in case, correct them.
+
+```{r}
+any(is.na(dataset))
+#correct na or empty values 
+na_col <- unlist(lapply(dataset, function(x) any(is.na(x))))
+```
+
+Since we have merged training and test set together, we don't need to transform
+NA values in the column Survived.
+```{r}
+#change value of survived : all test set lines have NAs but don't need to be changed
+na_col['Survived'] <- FALSE
+```
+
+Now we can correct the missing data. In particular we see that Age and Fare contain 
+both some NAs. The former will be adapted using the median value and the latter using
+the mean. 
+In few cases the column Embarked contained an empty value, which will be substituted 
+with the most common used.
+```{r}
+#Age
+dataset['Age'][is.na(dataset['Age'])]<- median(dataset$Age, na.rm= TRUE)
+
+#Fare
+dataset['Fare'][is.na(dataset['Fare'])] <- colMeans(test_set['Fare'], na.rm= TRUE)
+dataset$Embarked[which(dataset$Embarked %in% '')] <- 'C'
+
+```
+
+Now that the dataset has been cleaned, we will consider how we can improve the information
+that we have available. Some of the column in the dataset are not very useful like that. 
+Instead, we could think of adding some new features.
+In the column Cabin, for instance, we have a list of all the names of a cabin, when taken.
+It might be more helpful to have just a binary information about it.
+```{r}
+dataset$hasCabin<- ifelse(dataset$Cabin %in% '', 0, 1)
+```
+
+The same concept can be used for Age: instead of considering the raw number, 
+we could think of adding a new value Ageset, indicating if a person was an adult 
+or a child.
+
+```{r}
+dataset$Ageset<- ifelse(dataset$Age>20, 1, 0)
+```
+
+Considering that we have also information about marital status and siblings, we
+can create a variable Family size that would be a sum those plus one (for the 
+person itself).
+
+```{r}
+dataset$Family_size <- dataset$SibSp + dataset$Parch + 1
+
+```
+
+Another interesting information present in the data, it's the title that we can 
+find in each name. Considering that we can find it always in the same position, 
+we can extract it. Values that don't have a high frequency are combined together
+with more common one. 
+```{r}
+dataset$Title <- gsub('(.*, )|(\\..*)', '', dataset$Name)
+# Titles with very low cell counts to be combined to "rare" level
+rare_title <- c('Dona', 'Lady', 'the Countess','Capt', 'Col', 'Don', 
+                'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer')
+
+# Also reassign mlle, ms, and mme accordingly
+dataset$Title[dataset$Title == 'Mlle']        <- 'Miss' 
+dataset$Title[dataset$Title == 'Ms']          <- 'Miss'
+dataset$Title[dataset$Title == 'Mme']         <- 'Mrs' 
+dataset$Title[dataset$Title %in% rare_title]  <- 'Rare Title'
+
+dataset$Title <- as.factor(dataset$Title)
+dataset$Embarked <- as.factor (dataset$Embarked)
+
+```
+
+#Predictive modelling
+Now that data are cleaned and complete with new features, we can start to train 
+our model. In this case, we are using a Random Forest model with 10000 trees.
+
+```{r}
+#split data
+training_set <- dataset[1:891,]
+test_set <- dataset[892:1309,]
+
+# Fitting random forest classification to the Training set
+library(randomForest)
+
+classifier = randomForest(factor(Survived) ~ Pclass + Sex + Age  + SibSp + Parch + Embarked + 
+                            Ageset + Fare + hasCabin + Family_size + Title,
+                   data= training_set, ntree = 10000)
+
+# Show model error
+plot(classifier, ylim=c(0,0.36))
+legend('topright', colnames(classifier$err.rate), col=1:3, fill=1:3)
+
+```
+
+The black line shows the overall error rate which falls below 20%. The red and green lines show the error rate for ‘died’ and ‘survived’ respectively. We can see that right now we’re much more successful predicting death than we are survival. 
+
+Now we can check what's the variable importance in the model used.
+```{r}
+# Get importance
+importance    <- importance(classifier)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+library('dplyr')
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                           y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+            hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip() 
+```
+
+Interesting to see that our new feature Title is the most important one! 
+
+To conclude, we can apply our model on the new test data and save the results 
+as csv.
+
+```{r}
+# Predicting the Test set results
+y_pred <- predict(classifier, test_set[-2], type='class')
+
+#write result to csv
+result <- data.frame(PassengerID = test_set$PassengerId, Survived = y_pred)
+write.csv(x = result, file = 'result.csv', row.names = FALSE, quote = FALSE)
+
+
+```
+
